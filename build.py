@@ -1,8 +1,9 @@
 """Build anime-mappings.bin.gz, a packed list of Fribb's anime-list-mini.json and Anime-Lists' anime-list.xml.
 
-The packed list holds everything both files carry, in tables of named, typed columns (the README's "The format").
-The builder knows every key, attribute and element of both files and stops on any other one, so new upstream data
-stops a release instead of being dropped. The output is the same bytes for the same input.
+The packed list holds everything both files carry but the keys FRIBB_DROPPED names (Fribb's `anime-planet_id`), in
+tables of named, typed columns (the README's "The format"). The builder knows every key, attribute and element of
+both files and stops on any other one, so new upstream data stops a release instead of being dropped. The output is
+the same bytes for the same input.
 
 Usage:
   python build.py FRIBB_JSON ANIME_LISTS_XML OUT [--check]   build OUT (gzip), and with --check read it back and
@@ -39,7 +40,6 @@ FRIBB_COLUMNS = {
     "type": DICT,
     "anidb_id": INT_DELTA,
     "mal_id": INT_DELTA,
-    "anime-planet_id": STR,
     "kitsu_id": INT_DELTA,
     "anisearch_id": INT_DELTA,
     "anilist_id": INT_DELTA,
@@ -57,6 +57,8 @@ FRIBB_COLUMNS = {
     "episode_offset.tmdb": INT,
 }
 FRIBB_OBJECTS = {"themoviedb_id": ("tv", "movie"), "season": ("tvdb", "tmdb"), "episode_offset": ("tvdb", "tmdb")}
+# Fribb keys left out on purpose; Fribb's own files have them. Anime-Planet's string slugs were a third of the file.
+FRIBB_DROPPED = ("anime-planet_id",)
 
 # Anime-Lists' <anime> attributes. A "number or word" attribute is two columns: `<name>` holds a decimal value as
 # an int, `<name>_text` (DICT) any other value. A "list" attribute is a comma-separated list.
@@ -187,6 +189,8 @@ def fribb_columns(rows):
                     flat[f"{key}.{sub}"] = v
             elif key in FRIBB_COLUMNS:
                 flat[key] = value
+            elif key in FRIBB_DROPPED:
+                continue
             else:
                 raise Unknown(f"{where}: unknown key {key!r}")
         for name, kind in FRIBB_COLUMNS.items():
@@ -561,6 +565,7 @@ def check(out, fribb_path, anime_lists_path):
     if len(actual) != len(expected):
         raise SystemExit(f"check: {len(actual)} Fribb rows read back, {len(expected)} upstream")
     for i, (a, x) in enumerate(zip(actual, expected)):
+        x = {k: v for k, v in x.items() if k not in FRIBB_DROPPED}
         if a != x:
             raise SystemExit(f"check: Fribb row {i} reads back as {a}, upstream {x}")
     fribb = len(actual)

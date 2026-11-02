@@ -3,14 +3,17 @@
 Two community anime mapping datasets in one gzipped file, rebuilt every day they change:
 
 - **[Fribb/anime-lists](https://github.com/Fribb/anime-lists)**' `anime-list-mini.json`: which AniDB, MyAnimeList,
-  Kitsu, AniList, anime-planet, aniSearch, AnimeCountdown, Simkl, Anime News Network and LiveChart entry is which
-  TMDB, IMDb and TheTVDB title, season and episode offset (about 40,000 rows).
+  Kitsu, AniList, aniSearch, AnimeCountdown, Simkl, Anime News Network and LiveChart entry is which TMDB, IMDb and
+  TheTVDB title, season and episode offset (about 40,000 rows).
 - **[Anime-Lists/anime-lists](https://github.com/Anime-Lists/anime-lists)**' `anime-list.xml`: where each AniDB
   entry's episodes lie on TheTVDB's and TMDB's seasons, with its name and supplemental info (about 11,000 entries).
 
-`anime-mappings.bin.gz` holds everything both files carry, losslessly, as a [packed list](#the-format): tables of
-named, typed columns that an app reads with nothing but a gzip decoder. It is about 0.95 MB (2.2 MB unpacked), against
-6 MB and 1.7 MB for the two files as published (1.5 MB gzipped).
+`anime-mappings.bin.gz` holds everything both files carry but Fribb's Anime-Planet IDs, losslessly, as a
+[packed list](#the-format): tables of named, typed columns that an app reads with nothing but a gzip decoder. It is
+about 0.65 MB (1.5 MB unpacked), against 6 MB and 1.7 MB for the two files as published (1.5 MB gzipped).
+
+The dataset leaves out Fribb's `anime-planet_id` (Anime-Planet's string slugs): they were a third of the file
+(0.95 MB with them). Fribb's own files have them.
 
 ## The data is Fribb's and Anime-Lists'
 
@@ -30,10 +33,10 @@ code, not the data.
 ## Releases
 
 A [workflow](.github/workflows/release.yml) runs every day and on demand. It reads both upstreams' current commits
-(their default branches), stops when the latest release was built from the same two, and otherwise downloads both
-files at those commits, builds the file, reads it back and compares it field by field with both files
-(`build.py --check`), and publishes a release tagged `vYYYY.MM.DD` (`vYYYY.MM.DD.2`, `.3`, ... for a second release
-the same day, UTC) with two assets:
+(their default branches), stops when the latest release was built from the same two with the same `build.py`, and
+otherwise downloads both files at those commits, builds the file, reads it back and compares it field by field with
+both files (`build.py --check`), and publishes a release tagged `vYYYY.MM.DD` (`vYYYY.MM.DD.2`, `.3`, ... for a
+second release the same day, UTC) with two assets:
 
 | Asset | Contents |
 |---|---|
@@ -48,9 +51,10 @@ curl -LO https://github.com/edde746/anime-mappings/releases/latest/download/SHA2
 sha256sum -c SHA256SUMS
 ```
 
-The builder knows every key, attribute and element of both files. Anything else (a new key, a new element, a value of
-another type) stops the build with the reason, so new upstream data stops the release until the builder knows it,
-instead of being dropped. The same two files always give the same bytes (`gzip -9`, no file name, no time).
+The builder knows every key, attribute and element of both files, and leaves out only the keys it lists as dropped
+(`FRIBB_DROPPED`: `anime-planet_id`); `--check` compares every other field. Anything else (a new key, a new element,
+a value of another type) stops the build with the reason, so new upstream data stops the release until the builder
+knows it, instead of being dropped. The same two files always give the same bytes (`gzip -9`, no file name, no time).
 
 ## Building
 
@@ -106,14 +110,13 @@ data ends exactly at its length. A new version number means a change an old read
 
 One row per element of `anime-list-mini.json`, in the file's order. A column holds a key's value; a dotted name holds a
 key of an object: `season.tvdb` is `{"season": {"tvdb": …}}`. A row's JSON object is its present values (key order
-isn't kept).
+isn't kept), without `anime-planet_id`, which the dataset leaves out.
 
 | Column | Type | JSON |
 |---|---|---|
 | `type` | dict | `type`: `TV`, `MOVIE`, `OVA`, `ONA`, `SPECIAL`, `UNKNOWN` |
 | `anidb_id` | int_delta | `anidb_id` |
 | `mal_id` | int_delta | `mal_id` |
-| `anime-planet_id` | str | `anime-planet_id` (a slug) |
 | `kitsu_id` | int_delta | `kitsu_id` |
 | `anisearch_id` | int_delta | `anisearch_id` |
 | `anilist_id` | int_delta | `anilist_id` |

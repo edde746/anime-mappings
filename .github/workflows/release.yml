@@ -38,12 +38,16 @@ jobs:
           fribb=$(git ls-remote "https://github.com/$FRIBB_REPO" HEAD | cut -f1)
           lists=$(git ls-remote "https://github.com/$ANIME_LISTS_REPO" HEAD | cut -f1)
           [[ $fribb =~ ^[0-9a-f]{40}$ && $lists =~ ^[0-9a-f]{40}$ ]] || { echo "no upstream commit: '$fribb' '$lists'"; exit 1; }
+          # The builder's blob: a changed build.py (a new column, a dropped key) is a new release too.
+          builder=$(git hash-object build.py)
           echo "fribb=$fribb" >> "$GITHUB_OUTPUT"
           echo "lists=$lists" >> "$GITHUB_OUTPUT"
-          # The latest release's notes name the commits it was built from (see "Write the release notes").
+          echo "builder=$builder" >> "$GITHUB_OUTPUT"
+          # The latest release's notes name the commits and the builder it was built from ("Write the release notes").
           notes=$(gh release view --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
-          if grep -qF "$FRIBB_REPO@$fribb" <<<"$notes" && grep -qF "$ANIME_LISTS_REPO@$lists" <<<"$notes"; then
-            echo "The latest release was built from $FRIBB_REPO@$fribb and $ANIME_LISTS_REPO@$lists: nothing to do."
+          if grep -qF "$FRIBB_REPO@$fribb" <<<"$notes" && grep -qF "$ANIME_LISTS_REPO@$lists" <<<"$notes" &&
+            grep -qF "build.py blob $builder" <<<"$notes"; then
+            echo "The latest release was built from $FRIBB_REPO@$fribb and $ANIME_LISTS_REPO@$lists with this build.py: nothing to do."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -73,6 +77,7 @@ jobs:
         env:
           FRIBB: ${{ steps.upstream.outputs.fribb }}
           LISTS: ${{ steps.upstream.outputs.lists }}
+          BUILDER: ${{ steps.upstream.outputs.builder }}
         run: |
           gz=$(stat -c %s out/anime-mappings.bin.gz)
           raw=$(gzip -dc out/anime-mappings.bin.gz | wc -c)
@@ -81,6 +86,8 @@ jobs:
             echo
             echo "- $FRIBB_REPO@$FRIBB ([\`$FRIBB_FILE\`](https://github.com/$FRIBB_REPO/blob/$FRIBB/$FRIBB_FILE))"
             echo "- $ANIME_LISTS_REPO@$LISTS ([\`$ANIME_LISTS_FILE\`](https://github.com/$ANIME_LISTS_REPO/blob/$LISTS/$ANIME_LISTS_FILE))"
+            echo
+            echo "With this repository's build.py blob $BUILDER (commit $GITHUB_SHA)."
             echo
             echo "\`anime-mappings.bin.gz\`: $gz bytes, $raw bytes unpacked."
             echo
