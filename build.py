@@ -582,10 +582,9 @@ def dump(path):
     print(f"{path}: {len(data):,} bytes, {len(raw):,} unpacked")
     r = Reader(raw, 5)
     for _ in range(r.varint()):
-        name, rows, count = r.text(), r.varint(), None
-        count = r.varint()
+        name, rows = r.text(), r.varint()
         print(f"{name}: {rows:,} rows")
-        for _ in range(count):
+        for _ in range(r.varint()):
             cname, kind, length = r.text(), r.byte(), r.varint()
             r.bytes(length)
             print(f"  {cname:24} {TYPE_NAMES.get(kind, kind):10} {length:>9,} bytes")
