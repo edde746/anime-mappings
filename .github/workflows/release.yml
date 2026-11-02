@@ -1,0 +1,101 @@
+name: release
+
+# Daily, and on demand: build anime-mappings.bin.gz from both upstreams' current commits and publish it as a release,
+# unless the latest release was built from those same commits.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FRIBB_REPO: Fribb/anime-lists
+      FRIBB_FILE: anime-list-mini.json
+      ANIME_LISTS_REPO: Anime-Lists/anime-lists
+      ANIME_LISTS_FILE: anime-list.xml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Find the upstream commits
+        id: upstream
+        run: |
+          fribb=$(git ls-remote "https://github.com/$FRIBB_REPO" HEAD | cut -f1)
+          lists=$(git ls-remote "https://github.com/$ANIME_LISTS_REPO" HEAD | cut -f1)
+          [[ $fribb =~ ^[0-9a-f]{40}$ && $lists =~ ^[0-9a-f]{40}$ ]] || { echo "no upstream commit: '$fribb' '$lists'"; exit 1; }
+          echo "fribb=$fribb" >> "$GITHUB_OUTPUT"
+          echo "lists=$lists" >> "$GITHUB_OUTPUT"
+          # The latest release's notes name the commits it was built from (see "Write the release notes").
+          notes=$(gh release view --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+          if grep -qF "$FRIBB_REPO@$fribb" <<<"$notes" && grep -qF "$ANIME_LISTS_REPO@$lists" <<<"$notes"; then
+            echo "The latest release was built from $FRIBB_REPO@$fribb and $ANIME_LISTS_REPO@$lists: nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download both files at those commits
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          FRIBB: ${{ steps.upstream.outputs.fribb }}
+          LISTS: ${{ steps.upstream.outputs.lists }}
+        run: |
+          mkdir -p upstream out
+          curl -sSfL --retry 3 -o "upstream/$FRIBB_FILE" "https://raw.githubusercontent.com/$FRIBB_REPO/$FRIBB/$FRIBB_FILE"
+          curl -sSfL --retry 3 -o "upstream/$ANIME_LISTS_FILE" "https://raw.githubusercontent.com/$ANIME_LISTS_REPO/$LISTS/$ANIME_LISTS_FILE"
+          ls -l upstream
+
+      - name: Build and check
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          python3 --version
+          python3 build.py "upstream/$FRIBB_FILE" "upstream/$ANIME_LISTS_FILE" out/anime-mappings.bin.gz --check
+          python3 build.py --dump out/anime-mappings.bin.gz | tee out/tables.txt
+          (cd out && sha256sum anime-mappings.bin.gz > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Write the release notes
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          FRIBB: ${{ steps.upstream.outputs.fribb }}
+          LISTS: ${{ steps.upstream.outputs.lists }}
+        run: |
+          gz=$(stat -c %s out/anime-mappings.bin.gz)
+          raw=$(gzip -dc out/anime-mappings.bin.gz | wc -c)
+          {
+            echo "Built from:"
+            echo
+            echo "- $FRIBB_REPO@$FRIBB ([\`$FRIBB_FILE\`](https://github.com/$FRIBB_REPO/blob/$FRIBB/$FRIBB_FILE))"
+            echo "- $ANIME_LISTS_REPO@$LISTS ([\`$ANIME_LISTS_FILE\`](https://github.com/$ANIME_LISTS_REPO/blob/$LISTS/$ANIME_LISTS_FILE))"
+            echo
+            echo "\`anime-mappings.bin.gz\`: $gz bytes, $raw bytes unpacked."
+            echo
+            echo '```'
+            tail -n +2 out/tables.txt
+            echo '```'
+            echo
+            echo "The data is Fribb's and Anime-Lists'; see the README."
+          } > out/notes.md
+          cat out/notes.md
+
+      - name: Publish the release
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          base="v$(date -u +%Y.%m.%d)"
+          tag=$base
+          n=2
+          while git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; do
+            tag="$base.$n"
+            n=$((n + 1))
+          done
+          gh release create "$tag" out/anime-mappings.bin.gz out/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" --notes-file out/notes.md
