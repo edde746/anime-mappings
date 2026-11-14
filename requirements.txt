@@ -1,0 +1,2 @@
+# build.py writes and reads the file with trave, pinned so the same input gives the same bytes.
+trave==1.0.0

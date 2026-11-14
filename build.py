@@ -1,19 +1,17 @@
 """Build anime-mappings.bin.gz, a packed list of Fribb's anime-list-mini.json and Anime-Lists' anime-list.xml.
 
-The packed list holds everything both files carry but the keys FRIBB_DROPPED names (Fribb's `anime-planet_id`), in
-tables of named, typed columns (the README's "The format"). The builder knows every key, attribute and element of
-both files and stops on any other one, so new upstream data stops a release instead of being dropped. The output is
-the same bytes for the same input.
+The packed list holds everything both files carry but the keys FRIBB_DROPPED names (Fribb's `anime-planet_id`), as a
+Trave file (the README's "The format"). The builder knows every key, attribute and element of both files and stops on
+any other one, so new upstream data stops a release instead of being dropped. The output is the same bytes for the
+same input.
 
 Usage:
   python build.py FRIBB_JSON ANIME_LISTS_XML OUT [--check]   build OUT (gzip), and with --check read it back and
                                                               compare it field by field with both inputs
   python build.py --dump OUT                                  print OUT's tables and columns with their sizes
-Python 3.9 or newer, standard library only.
+Python 3.9 or newer, plus trave (pip install -r requirements.txt).
 """
 import argparse
-import gzip
-import io
 import json
 import os
 import re
@@ -21,11 +19,9 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-MAGIC, VERSION = b"AMAP", 1
+import trave
 
-# Column types (one byte each in the file).
-INT, INT_DELTA, STR, DICT, INT_LIST, STR_LIST = 1, 2, 3, 4, 5, 6
-TYPE_NAMES = {INT: "int", INT_DELTA: "int_delta", STR: "str", DICT: "dict", INT_LIST: "int_list", STR_LIST: "str_list"}
+MAGIC = b"AMAP"
 
 INT64 = range(-(2**63), 2**63)
 DECIMAL = re.compile(r"-?(0|[1-9][0-9]*)")
@@ -37,31 +33,31 @@ class Unknown(Exception):
 
 # Fribb: column name -> type, in the file's column order. A dotted name is a key of a nested object.
 FRIBB_COLUMNS = {
-    "type": DICT,
-    "anidb_id": INT_DELTA,
-    "mal_id": INT_DELTA,
-    "kitsu_id": INT_DELTA,
-    "anisearch_id": INT_DELTA,
-    "anilist_id": INT_DELTA,
-    "animecountdown_id": INT_DELTA,
-    "simkl_id": INT_DELTA,
-    "animenewsnetwork_id": INT_DELTA,
-    "livechart_id": INT_DELTA,
-    "themoviedb_id.tv": INT,
-    "themoviedb_id.movie": INT_LIST,
-    "imdb_id": STR_LIST,
-    "tvdb_id": INT,
-    "season.tvdb": INT,
-    "season.tmdb": INT,
-    "episode_offset.tvdb": INT,
-    "episode_offset.tmdb": INT,
+    "type": trave.DICT,
+    "anidb_id": trave.INT_DELTA,
+    "mal_id": trave.INT_DELTA,
+    "kitsu_id": trave.INT_DELTA,
+    "anisearch_id": trave.INT_DELTA,
+    "anilist_id": trave.INT_DELTA,
+    "animecountdown_id": trave.INT_DELTA,
+    "simkl_id": trave.INT_DELTA,
+    "animenewsnetwork_id": trave.INT_DELTA,
+    "livechart_id": trave.INT_DELTA,
+    "themoviedb_id.tv": trave.INT,
+    "themoviedb_id.movie": trave.INT_LIST,
+    "imdb_id": trave.STR_LIST,
+    "tvdb_id": trave.INT,
+    "season.tvdb": trave.INT,
+    "season.tmdb": trave.INT,
+    "episode_offset.tvdb": trave.INT,
+    "episode_offset.tmdb": trave.INT,
 }
 FRIBB_OBJECTS = {"themoviedb_id": ("tv", "movie"), "season": ("tvdb", "tmdb"), "episode_offset": ("tvdb", "tmdb")}
 # Fribb keys left out on purpose; Fribb's own files have them. Anime-Planet's string slugs were a third of the file.
 FRIBB_DROPPED = ("anime-planet_id",)
 
 # Anime-Lists' <anime> attributes. A "number or word" attribute is two columns: `<name>` holds a decimal value as
-# an int, `<name>_text` (DICT) any other value. A "list" attribute is a comma-separated list.
+# an int, `<name>_text` (a dict) any other value. A "list" attribute is a comma-separated list.
 ANIME_ATTRIBUTES = {
     "anidbid": "number",
     "tvdbid": "number or word",
@@ -78,82 +74,6 @@ SUPPLEMENTAL_TEXT = ("studio", "genre", "director", "credits")
 THUMB_ATTRIBUTES = ("dim", "colors", "preview")
 # The elements of an <anime>, in the order they must come in.
 ANIME_CHILDREN = ("name", "mapping-list", "before", "supplemental-info")
-
-
-# --- writing ---------------------------------------------------------------------------------------------------------
-
-def varint(n, out):
-    if n < 0:
-        raise ValueError(f"varint of a negative number {n}")
-    while n > 0x7F:
-        out.append(n & 0x7F | 0x80)
-        n >>= 7
-    out.append(n)
-
-
-def zigzag(n):
-    return n * 2 if n >= 0 else -n * 2 - 1
-
-
-def text(s, out):
-    b = s.encode("utf-8")
-    varint(len(b), out)
-    out += b
-
-
-def column(kind, values):
-    """The column's bytes: one entry per row, `None` for an absent value."""
-    out = bytearray()
-    if kind == DICT:
-        words = list(dict.fromkeys(v for v in values if v is not None))
-        varint(len(words), out)
-        for w in words:
-            text(w, out)
-        index = {w: i for i, w in enumerate(words)}
-    previous = 0
-    for v in values:
-        if v is None:
-            out.append(0)
-        elif kind == INT:
-            varint(zigzag(v) + 1, out)
-        elif kind == INT_DELTA:
-            varint(zigzag(v - previous) + 1, out)
-            previous = v
-        elif kind == STR:
-            b = v.encode("utf-8")
-            varint(len(b) + 1, out)
-            out += b
-        elif kind == DICT:
-            varint(index[v] + 1, out)
-        elif kind == INT_LIST:
-            varint(len(v) + 1, out)
-            for x in v:
-                varint(zigzag(x), out)
-        elif kind == STR_LIST:
-            varint(len(v) + 1, out)
-            for x in v:
-                text(x, out)
-    return out
-
-
-def write_tables(tables):
-    """tables: [(name, rows, [(column name, type, values)])] -> the packed list's bytes (not gzipped)."""
-    out = bytearray(MAGIC)
-    out.append(VERSION)
-    varint(len(tables), out)
-    for name, rows, columns in tables:
-        text(name, out)
-        varint(rows, out)
-        varint(len(columns), out)
-        for cname, kind, values in columns:
-            if len(values) != rows:
-                raise ValueError(f"{name}.{cname}: {len(values)} values for {rows} rows")
-            body = column(kind, values)
-            text(cname, out)
-            out.append(kind)
-            varint(len(body), out)
-            out += body
-    return bytes(out)
 
 
 # --- Fribb -----------------------------------------------------------------------------------------------------------
@@ -199,16 +119,16 @@ def fribb_columns(rows):
             if v is None:
                 if name in flat:
                     raise Unknown(f"{here}: null")
-            elif kind in (INT, INT_DELTA):
+            elif kind in (trave.INT, trave.INT_DELTA):
                 integer(v, here)
-            elif kind in (STR, DICT):
+            elif kind in (trave.STR, trave.DICT):
                 string(v, here)
-            elif kind == INT_LIST:
+            elif kind == trave.INT_LIST:
                 if type(v) is not list:
                     raise Unknown(f"{here}: {v!r} is not an array")
                 for x in v:
                     integer(x, here)
-            elif kind == STR_LIST:
+            elif kind == trave.STR_LIST:
                 if type(v) is not list:
                     raise Unknown(f"{here}: {v!r} is not an array")
                 for x in v:
@@ -363,14 +283,15 @@ def anime_lists_tables(root):
 
     anime_types = {}
     for attr, kind in ANIME_ATTRIBUTES.items():
-        anime_types[attr] = {"number": INT, "number or word": INT, "number list": INT_LIST, "text list": STR_LIST}[kind]
+        anime_types[attr] = {"number": trave.INT, "number or word": trave.INT, "number list": trave.INT_LIST,
+                             "text list": trave.STR_LIST}[kind]
         if kind == "number or word":
-            anime_types[attr + "_text"] = DICT
-    anime_types["anidbid"] = INT_DELTA
-    anime_types["name"], anime_types["before"] = STR, STR
-    mapping_types = {"anidbid": INT_DELTA, **{a: INT for a in MAPPING_ATTRIBUTES}, "text": STR}
-    supplemental_types = {"anidbid": INT_DELTA, "block": INT, "replace": DICT, "element": DICT, "text": STR,
-                          "dim": DICT, "colors": DICT, "preview": STR}
+            anime_types[attr + "_text"] = trave.DICT
+    anime_types["anidbid"] = trave.INT_DELTA
+    anime_types["name"], anime_types["before"] = trave.STR, trave.STR
+    mapping_types = {"anidbid": trave.INT_DELTA, **{a: trave.INT for a in MAPPING_ATTRIBUTES}, "text": trave.STR}
+    supplemental_types = {"anidbid": trave.INT_DELTA, "block": trave.INT, "replace": trave.DICT, "element": trave.DICT,
+                          "text": trave.STR, "dim": trave.DICT, "colors": trave.DICT, "preview": trave.STR}
     rows = len(anime["anidbid"])
     return [
         ("anime_lists", rows, [(n, anime_types[n], v) for n, v in anime.items()]),
@@ -387,104 +308,10 @@ def build(fribb_path, anime_lists_path):
     rows = json.loads(Path(fribb_path).read_bytes())
     fribb = ("fribb", len(rows) if type(rows) is list else 0, fribb_columns(rows))
     root = ET.parse(anime_lists_path).getroot()
-    return write_tables([fribb, *anime_lists_tables(root)])
+    return trave.pack(MAGIC, [fribb, *anime_lists_tables(root)])
 
 
-def gzip_bytes(data):
-    """gzip -9 with no file name and no time, so the same data gives the same bytes."""
-    buffer = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", compresslevel=9, fileobj=buffer, mtime=0) as f:
-        f.write(data)
-    return buffer.getvalue()
-
-
-# --- reading: the reference reader -----------------------------------------------------------------------------------
-
-class Reader:
-    def __init__(self, data, pos=0, end=None):
-        self.data, self.pos, self.end = data, pos, len(data) if end is None else end
-
-    def byte(self):
-        if self.pos >= self.end:
-            raise ValueError("the packed list is cut short")
-        self.pos += 1
-        return self.data[self.pos - 1]
-
-    def varint(self):
-        n = shift = 0
-        while True:
-            b = self.byte()
-            n |= (b & 0x7F) << shift
-            shift += 7
-            if b < 0x80:
-                return n
-
-    def bytes(self, n):
-        if self.pos + n > self.end:
-            raise ValueError("the packed list is cut short")
-        self.pos += n
-        return self.data[self.pos - n:self.pos]
-
-    def text(self):
-        return self.bytes(self.varint()).decode("utf-8")
-
-    def signed(self):
-        return unzigzag(self.varint())
-
-
-def unzigzag(n):
-    return n >> 1 if n % 2 == 0 else -(n >> 1) - 1
-
-
-def read_column(kind, rows, r):
-    """A column's values, `None` for absent; `r` reads exactly the column's bytes."""
-    words = [r.text() for _ in range(r.varint())] if kind == DICT else None
-    values, previous = [], 0
-    for _ in range(rows):
-        tag = r.varint()
-        if tag == 0:
-            values.append(None)
-            continue
-        if kind == INT:
-            values.append(unzigzag(tag - 1))
-        elif kind == INT_DELTA:
-            previous += unzigzag(tag - 1)
-            values.append(previous)
-        elif kind == STR:
-            values.append(r.bytes(tag - 1).decode("utf-8"))
-        elif kind == DICT:
-            values.append(words[tag - 1])
-        elif kind == INT_LIST:
-            values.append([r.signed() for _ in range(tag - 1)])
-        elif kind == STR_LIST:
-            values.append([r.text() for _ in range(tag - 1)])
-    if r.pos != r.end:
-        raise ValueError(f"{r.end - r.pos} bytes left in a column")
-    return values
-
-
-def read(data):
-    """The packed list (gzipped or not) as {table: (rows, {column: values})}; columns of an unknown type are skipped."""
-    if data[:2] == b"\x1f\x8b":
-        data = gzip.decompress(data)
-    r = Reader(data)
-    if r.bytes(4) != MAGIC or r.byte() != VERSION:
-        raise ValueError(f"not a version {VERSION} anime mappings packed list")
-    tables = {}
-    for _ in range(r.varint()):
-        name, rows = r.text(), r.varint()
-        columns = {}
-        for _ in range(r.varint()):
-            cname, kind, length = r.text(), r.byte(), r.varint()
-            body = Reader(data, r.pos, r.pos + length)
-            r.bytes(length)
-            if kind in TYPE_NAMES:
-                columns[cname] = read_column(kind, rows, body)
-        tables[name] = (rows, columns)
-    if r.pos != len(data):
-        raise ValueError(f"{len(data) - r.pos} bytes after the last table")
-    return tables
-
+# --- reading back -----------------------------------------------------------------------------------------------------
 
 def fribb_rows(tables):
     """The Fribb table as anime-list-mini.json's rows."""
@@ -559,7 +386,7 @@ def canonical(e):
 # --- command line ----------------------------------------------------------------------------------------------------
 
 def check(out, fribb_path, anime_lists_path):
-    tables = read(Path(out).read_bytes())
+    tables = trave.read(Path(out).read_bytes(), MAGIC)
     expected = json.loads(Path(fribb_path).read_bytes())
     actual = fribb_rows(tables)
     if len(actual) != len(expected):
@@ -583,16 +410,20 @@ def check(out, fribb_path, anime_lists_path):
 
 def dump(path):
     data = Path(path).read_bytes()
-    raw = gzip.decompress(data)
+    try:
+        raw = trave.unpack(data)
+        trave.read(raw, MAGIC)  # the whole file is valid before anything is printed
+    except ValueError as e:
+        raise SystemExit(f"{path}: {e}")
     print(f"{path}: {len(data):,} bytes, {len(raw):,} unpacked")
-    r = Reader(raw, 5)
+    r = trave.Reader(raw, 5)
     for _ in range(r.varint()):
         name, rows = r.text(), r.varint()
         print(f"{name}: {rows:,} rows")
         for _ in range(r.varint()):
             cname, kind, length = r.text(), r.byte(), r.varint()
             r.bytes(length)
-            print(f"  {cname:24} {TYPE_NAMES.get(kind, kind):10} {length:>9,} bytes")
+            print(f"  {cname:24} {trave.TYPE_NAMES.get(kind, kind):10} {length:>9,} bytes")
 
 
 def main():
@@ -611,7 +442,7 @@ def main():
         data = build(fribb, anime_lists)
     except Unknown as e:
         raise SystemExit(f"unknown upstream data, not built: {e}")
-    packed = gzip_bytes(data)
+    packed = trave.gzip_bytes(data)
     tmp = out.with_name(out.name + ".part")
     tmp.write_bytes(packed)
     os.replace(tmp, out)
