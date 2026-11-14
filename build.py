@@ -23,7 +23,7 @@ import trave
 
 MAGIC = b"AMAP"
 
-INT64 = range(-(2**63), 2**63)
+INT64 = range(-(2**63) + 1, 2**63)  # Trave's int range: a signed 64-bit integer above -2**63
 DECIMAL = re.compile(r"-?(0|[1-9][0-9]*)")
 
 
@@ -80,7 +80,7 @@ ANIME_CHILDREN = ("name", "mapping-list", "before", "supplemental-info")
 
 def integer(value, where):
     if type(value) is not int or value not in INT64:
-        raise Unknown(f"{where}: {value!r} is not a 64-bit integer")
+        raise Unknown(f"{where}: {value!r} is not a 64-bit integer above -2**63")
     return value
 
 
@@ -164,7 +164,7 @@ def leaf(e, where):
 
 def number(value, where):
     if not DECIMAL.fullmatch(value) or int(value) not in INT64:
-        raise Unknown(f"{where}: {value!r} is not a decimal 64-bit integer")
+        raise Unknown(f"{where}: {value!r} is not a decimal 64-bit integer above -2**63")
     return int(value)
 
 
