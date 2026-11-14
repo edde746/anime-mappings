@@ -1,14 +1,18 @@
-"""Build anime-mappings.bin.gz, a packed list of Fribb's anime-list-mini.json and Anime-Lists' anime-list.xml.
+"""Build anime-mappings.bin.gz, a packed list of Fribb's anime-list-mini.json, Anime-Lists' anime-list.xml and the
+titles of manami's anime-offline-database.
 
-The packed list holds everything both files carry but the keys FRIBB_DROPPED names (Fribb's `anime-planet_id`), as a
-Trave file (the README's "The format"). The builder knows every key, attribute and element of both files and stops on
-any other one, so new upstream data stops a release instead of being dropped. The output is the same bytes for the
-same input.
+The packed list holds everything Fribb's and Anime-Lists' files carry but the keys FRIBB_DROPPED names (Fribb's
+`anime-planet_id`), as a Trave file (the README's "The format"). The builder knows every key, attribute and element of
+both files and stops on any other one, so new upstream data stops a release instead of being dropped. From manami's
+database it takes the IDs, titles, synonyms, type, episode count and season of every entry that Fribb or Anime-Lists
+link to TMDB (MANAMI_COLUMNS), verbatim. The output is the same bytes for the same input.
 
 Usage:
-  python build.py FRIBB_JSON ANIME_LISTS_XML OUT [--check]   build OUT (gzip), and with --check read it back and
-                                                              compare it field by field with both inputs
-  python build.py --dump OUT                                  print OUT's tables and columns with their sizes
+  python build.py FRIBB_JSON ANIME_LISTS_XML MANAMI_JSON OUT [--check]   build OUT (gzip), and with --check read it
+                                                                          back and compare it field by field with
+                                                                          the inputs
+  python build.py --dump OUT                                              print OUT's tables and columns with their
+                                                                          sizes
 Python 3.9 or newer, plus trave (pip install -r requirements.txt).
 """
 import argparse
@@ -301,14 +305,95 @@ def anime_lists_tables(root):
     ]
 
 
+# --- manami ----------------------------------------------------------------------------------------------------------
+
+# The table's columns: an entry's AniDB, MyAnimeList and AniList IDs (from its `sources` URLs; an entry can merge
+# several of one site), then its keys.
+MANAMI_COLUMNS = {
+    "anidb_id": trave.INT_LIST,
+    "mal_id": trave.INT_LIST,
+    "anilist_id": trave.INT_LIST,
+    "type": trave.DICT,
+    "episodes": trave.INT,
+    "season": trave.DICT,
+    "year": trave.INT,
+    "title": trave.STR,
+    "synonyms": trave.STR_LIST,
+}
+MANAMI_SOURCES = {
+    "anidb_id": re.compile(r"https://anidb\.net/anime/([1-9][0-9]*)"),
+    "mal_id": re.compile(r"https://myanimelist\.net/anime/([1-9][0-9]*)"),
+    "anilist_id": re.compile(r"https://anilist\.co/anime/([1-9][0-9]*)"),
+}
+
+
+def tmdb_linked(fribb_rows, root):
+    """{column: IDs} of the AniDB, MyAnimeList and AniList entries Fribb or Anime-Lists give a TMDB series or film.
+    Both inputs have passed fribb_columns and anime_lists_tables."""
+    linked = {name: set() for name in MANAMI_SOURCES}
+    for row in fribb_rows:
+        if row.get("themoviedb_id"):
+            for name in MANAMI_SOURCES:
+                if name in row:
+                    linked[name].add(row[name])
+    for e in root:
+        if e.get("tmdbtv") is not None or e.get("tmdbid") is not None:
+            linked["anidb_id"].add(number(e.get("anidbid"), "Anime-Lists anidbid"))
+    return linked
+
+
+def manami_entries(doc, linked):
+    """The rows of the manami table: the database's entries with an ID in `linked`, in its order, as {column: value}."""
+    if type(doc) is not dict or type(doc.get("data")) is not list:
+        raise Unknown("manami: the document is not an object with a `data` array")
+    out = []
+    for i, e in enumerate(doc["data"]):
+        where = f"manami entry {i}"
+        if type(e) is not dict:
+            raise Unknown(f"{where}: not an object")
+        sources = e.get("sources")
+        if type(sources) is not list:
+            raise Unknown(f"{where}.sources: {sources!r} is not an array")
+        row = {}
+        for name, pattern in MANAMI_SOURCES.items():
+            matches = (pattern.fullmatch(string(s, f"{where}.sources")) for s in sources)
+            row[name] = [integer(int(m.group(1)), f"{where}.sources") for m in matches if m] or None
+        if not any(set(row[name] or ()) & linked[name] for name in MANAMI_SOURCES):
+            continue
+        season = e.get("animeSeason")
+        if type(season) is not dict or set(season) - {"season", "year"}:
+            raise Unknown(f"{where}.animeSeason: {season!r} is not an object of `season` and `year`")
+        synonyms = e.get("synonyms")
+        if type(synonyms) is not list:
+            raise Unknown(f"{where}.synonyms: {synonyms!r} is not an array")
+        row["type"] = string(e.get("type"), f"{where}.type")
+        row["episodes"] = integer(e.get("episodes"), f"{where}.episodes")
+        row["season"] = string(season.get("season"), f"{where}.animeSeason.season")
+        row["year"] = None if season.get("year") is None else integer(season["year"], f"{where}.animeSeason.year")
+        row["title"] = string(e.get("title"), f"{where}.title")
+        row["synonyms"] = [string(s, f"{where}.synonyms") for s in synonyms]
+        out.append(row)
+    return out
+
+
+def manami_table(entries):
+    return ("manami", len(entries), [(name, kind, [e[name] for e in entries]) for name, kind in MANAMI_COLUMNS.items()])
+
+
 # --- building --------------------------------------------------------------------------------------------------------
 
-def build(fribb_path, anime_lists_path):
-    """Both files as the packed list's bytes (not gzipped)."""
+def manami_rows(fribb_rows, root, manami_path):
+    """The manami table's rows, of the entries Fribb's rows and Anime-Lists' root link to TMDB."""
+    return manami_entries(json.loads(Path(manami_path).read_bytes()), tmdb_linked(fribb_rows, root))
+
+
+def build(fribb_path, anime_lists_path, manami_path):
+    """The three files as the packed list's bytes (not gzipped)."""
     rows = json.loads(Path(fribb_path).read_bytes())
     fribb = ("fribb", len(rows) if type(rows) is list else 0, fribb_columns(rows))
     root = ET.parse(anime_lists_path).getroot()
-    return trave.pack(MAGIC, [fribb, *anime_lists_tables(root)])
+    anime_lists = anime_lists_tables(root)
+    return trave.pack(MAGIC, [fribb, *anime_lists, manami_table(manami_rows(rows, root, manami_path))])
 
 
 # --- reading back -----------------------------------------------------------------------------------------------------
@@ -377,6 +462,12 @@ def anime_lists_tree(tables):
     return ("anime-list", {}, None, out)
 
 
+def manami_back(tables):
+    """The manami table as {column: value} rows."""
+    rows, columns = tables["manami"]
+    return [{name: columns[name][i] for name in MANAMI_COLUMNS} for i in range(rows)]
+
+
 def canonical(e):
     """An element as (tag, attributes, text, children), a container's layout whitespace as no text."""
     t = e.text if len(e) == 0 else (None if blank(e.text) else e.text)
@@ -385,9 +476,9 @@ def canonical(e):
 
 # --- command line ----------------------------------------------------------------------------------------------------
 
-def check(out, fribb_path, anime_lists_path):
+def check(out, fribb_path, anime_lists_path, manami_path):
     tables = trave.read(Path(out).read_bytes(), MAGIC)
-    expected = json.loads(Path(fribb_path).read_bytes())
+    expected = upstream_rows = json.loads(Path(fribb_path).read_bytes())
     actual = fribb_rows(tables)
     if len(actual) != len(expected):
         raise SystemExit(f"check: {len(actual)} Fribb rows read back, {len(expected)} upstream")
@@ -396,7 +487,8 @@ def check(out, fribb_path, anime_lists_path):
         if a != x:
             raise SystemExit(f"check: Fribb row {i} reads back as {a}, upstream {x}")
     fribb = len(actual)
-    expected = canonical(ET.parse(anime_lists_path).getroot())
+    root = ET.parse(anime_lists_path).getroot()
+    expected = canonical(root)
     actual = anime_lists_tree(tables)
     if len(actual[3]) != len(expected[3]):
         raise SystemExit(f"check: {len(actual[3])} <anime> read back, {len(expected[3])} upstream")
@@ -405,7 +497,16 @@ def check(out, fribb_path, anime_lists_path):
             raise SystemExit(f"check: <anime> reads back as {a}, upstream {x}")
     if actual != expected:
         raise SystemExit("check: <anime-list> differs")
-    print(f"checked: {fribb:,} Fribb rows and {len(expected[3]):,} <anime> read back the same", flush=True)
+    anime = len(expected[3])
+    expected = manami_rows(upstream_rows, root, manami_path)
+    actual = manami_back(tables)
+    if len(actual) != len(expected):
+        raise SystemExit(f"check: {len(actual)} manami rows read back, {len(expected)} upstream")
+    for a, x in zip(actual, expected):
+        if a != x:
+            raise SystemExit(f"check: manami row reads back as {a}, upstream {x}")
+    print(f"checked: {fribb:,} Fribb rows, {anime:,} <anime> and {len(actual):,} manami rows read back the same",
+          flush=True)
 
 
 def dump(path):
@@ -429,17 +530,17 @@ def dump(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("inputs", nargs="*", type=Path)
-    p.add_argument("--check", action="store_true", help="read OUT back and compare it with both inputs")
+    p.add_argument("--check", action="store_true", help="read OUT back and compare it with the inputs")
     p.add_argument("--dump", type=Path, help="print a packed list's tables and columns")
     a = p.parse_args()
     if a.dump:
         dump(a.dump)
         return
-    if len(a.inputs) != 3:
-        p.error("FRIBB_JSON ANIME_LISTS_XML OUT expected")
-    fribb, anime_lists, out = a.inputs
+    if len(a.inputs) != 4:
+        p.error("FRIBB_JSON ANIME_LISTS_XML MANAMI_JSON OUT expected")
+    fribb, anime_lists, manami, out = a.inputs
     try:
-        data = build(fribb, anime_lists)
+        data = build(fribb, anime_lists, manami)
     except Unknown as e:
         raise SystemExit(f"unknown upstream data, not built: {e}")
     packed = trave.gzip_bytes(data)
@@ -448,7 +549,7 @@ def main():
     os.replace(tmp, out)
     print(f"built {out}: {len(packed):,} bytes ({len(data):,} unpacked)", flush=True)
     if a.check:
-        check(out, fribb, anime_lists)
+        check(out, fribb, anime_lists, manami)
 
 
 if __name__ == "__main__":

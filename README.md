@@ -1,41 +1,58 @@
 # anime-mappings
 
-Two community anime mapping datasets in one gzipped file, rebuilt every day they change:
+Two community anime mapping datasets and the titles of a third in one gzipped file, rebuilt every day they change:
 
 - **[Fribb/anime-lists](https://github.com/Fribb/anime-lists)**' `anime-list-mini.json`: which AniDB, MyAnimeList,
   Kitsu, AniList, aniSearch, AnimeCountdown, Simkl, Anime News Network and LiveChart entry is which TMDB, IMDb and
   TheTVDB title, season and episode offset (about 40,000 rows).
 - **[Anime-Lists/anime-lists](https://github.com/Anime-Lists/anime-lists)**' `anime-list.xml`: where each AniDB
   entry's episodes lie on TheTVDB's and TMDB's seasons, with its name and supplemental info (about 11,000 entries).
+- **[manami-project/anime-offline-database](https://github.com/manami-project/anime-offline-database)**'
+  `anime-offline-database-minified.json` (its latest release): the title, synonyms, type, episode count and season
+  of every entry that the two lists above give a TMDB series or film (about 8,600 of its 41,000 entries), with its
+  AniDB, MyAnimeList and AniList IDs. Its synonyms name a show's seasons and parts ("Mahoutsukai no Yome Season 2
+  Part 2") where AniDB's main titles often don't.
 
-`anime-mappings.bin.gz` holds everything both files carry but Fribb's Anime-Planet IDs, losslessly, as a
-[Trave file](#the-format): tables of named, typed columns that an app reads with nothing but a gzip decoder. It is
-about 0.65 MB (1.5 MB unpacked), against 6 MB and 1.7 MB for the two files as published (1.5 MB gzipped).
+`anime-mappings.bin.gz` holds everything the first two files carry but Fribb's Anime-Planet IDs, losslessly, and
+those columns of the third for those entries, as a [Trave file](#the-format): tables of named, typed columns that
+an app reads with nothing but a gzip decoder. It is about 2.2 MB (5.9 MB unpacked; 0.65 MB without the `manami`
+table), against 6 MB, 1.7 MB and 62 MB for the three files as published.
 
 The dataset leaves out Fribb's `anime-planet_id` (Anime-Planet's string slugs): they were a third of the file
-(0.95 MB with them). Fribb's own files have them.
+(0.95 MB with them). Fribb's own files have them. Of manami's entries it keeps only those the lists link to TMDB
+(all of them would be 3.8 MB), and of their keys only those above; manami's own files have the rest.
 
-## The data is Fribb's and Anime-Lists'
+## The data is Fribb's, Anime-Lists' and manami's
 
-Every value in the file comes from those two projects, unchanged. Credit them, not this repository:
+Every value in the file comes from those three projects, unchanged. Credit them, not this repository:
 
 - Fribb's anime-lists, https://github.com/Fribb/anime-lists, by Fribb and its contributors.
 - Anime-Lists' anime-lists, https://github.com/Anime-Lists/anime-lists, by its maintainers and contributors.
+- manami's anime-offline-database, https://github.com/manami-project/anime-offline-database, by manami and its
+  contributors.
 
-Neither project publishes a licence. Report mapping errors to them, not here.
+Fribb's and Anime-Lists' projects publish no licence. Report mapping errors to them, not here.
 
-Each release's notes name the exact commit of each upstream repository it was built from
-(`Fribb/anime-lists@<sha>`, `Anime-Lists/anime-lists@<sha>`), with links to the two files at those commits.
+The `manami` table contains information from manami's
+[anime-offline-database](https://github.com/manami-project/anime-offline-database), which is made available under
+the [Open Database License (ODbL) v1.0](https://opendatacommons.org/licenses/odbl/1-0/); its contents are under the
+[Database Contents License (DbCL) v1.0](https://opendatacommons.org/licenses/dbcl/1-0/). The `manami` table, a
+derivative database of it, is likewise made available under the ODbL v1.0: whoever uses or redistributes it must
+keep this notice and share adapted versions of it under the ODbL. Report title errors to manami's project.
+
+Each release's notes name the exact commit of each upstream repository and the manami release it was built from
+(`Fribb/anime-lists@<sha>`, `Anime-Lists/anime-lists@<sha>`, `manami-project/anime-offline-database release
+<tag>`), with links to the files, and repeat the ODbL notice.
 
 The code in this repository (the builder, the workflow) is under the [MIT licence](LICENSE); the licence covers the
 code, not the data.
 
 ## Releases
 
-A [workflow](.github/workflows/release.yml) runs every day and on demand. It reads both upstreams' current commits
-(their default branches), stops when the latest release was built from the same two with the same `build.py` and
-`requirements.txt` (its notes name both blobs), and otherwise downloads both files at those commits, builds the file,
-reads it back and compares it field by field with both files (`build.py --check`), and publishes a release tagged
+A [workflow](.github/workflows/release.yml) runs every day and on demand. It reads both lists' current commits (their
+default branches) and manami's latest release, stops when the latest release was built from the same three with the
+same `build.py` and `requirements.txt` (its notes name both blobs), and otherwise downloads the three files, builds the
+file, reads it back and compares it field by field with them (`build.py --check`), and publishes a release tagged
 `vYYYY.MM.DD` (`vYYYY.MM.DD.2`, `.3`, ... for a second release the same day, UTC) with two assets:
 
 | Asset | Contents |
@@ -51,22 +68,24 @@ curl -LO https://github.com/edde746/anime-mappings/releases/latest/download/SHA2
 sha256sum -c SHA256SUMS
 ```
 
-The builder knows every key, attribute and element of both files, and leaves out only the keys it lists as dropped
-(`FRIBB_DROPPED`: `anime-planet_id`); `--check` compares every other field. Anything else (a new key, a new element,
-a value of another type) stops the build with the reason, so new upstream data stops the release until the builder
-knows it, instead of being dropped. The same two files always give the same bytes (`gzip -9`, no file name, no time).
+The builder knows every key, attribute and element of Fribb's and Anime-Lists' files, and leaves out only the keys it
+lists as dropped (`FRIBB_DROPPED`: `anime-planet_id`); `--check` compares every other field. Anything else (a new key,
+a new element, a value of another type) stops the build with the reason, so new upstream data stops the release until
+the builder knows it, instead of being dropped. Of manami's file it reads only the keys of the `manami` table, and
+stops when one of them has another type. The same three files always give the same bytes (`gzip -9`, no file name,
+no time).
 
 ## Building
 
 ```sh
 python -m pip install -r requirements.txt
-python build.py anime-list-mini.json anime-list.xml anime-mappings.bin.gz --check
+python build.py anime-list-mini.json anime-list.xml anime-offline-database-minified.json anime-mappings.bin.gz --check
 python build.py --dump anime-mappings.bin.gz       # its tables and columns, with their sizes
 ```
 
 Python 3.9 or newer, plus `trave` (`pip install -r requirements.txt`). `build.py` reads the file back with
 `trave.read`; its `fribb_rows` turns the Fribb table back into the JSON's rows, `anime_lists_tree` the three
-Anime-Lists tables back into the XML's elements.
+Anime-Lists tables back into the XML's elements, `manami_back` the manami table into its rows.
 
 ## The format
 
@@ -151,3 +170,25 @@ One row per element of a `<supplemental-info>`, in the file's order.
 An `<anime>`'s elements come in the order `<name>`, `<mapping-list>`, `<before>`, `<supplemental-info>`...; the builder
 stops on any other order, on an empty `<mapping-list>` or `<supplemental-info>`, and on a `<fanart>` without exactly one
 `<thumb>`, so the tables give back the XML's elements exactly. Layout whitespace between elements isn't kept.
+
+### `manami`
+
+One row per entry of manami's `anime-offline-database-minified.json` (`data`) that has an AniDB, MyAnimeList or
+AniList ID which Fribb's table (a row with `themoviedb_id`) or Anime-Lists' (an `<anime>` with `tmdbtv` or `tmdbid`)
+links to TMDB, in the file's order (by title). The values are the entry's, verbatim; manami's other keys (pictures,
+tags, studios, scores, related entries, other sites' links) are left out. An entry merges one or more sites' pages,
+so it can carry several IDs of one site.
+
+| Column | Type | JSON |
+|---|---|---|
+| `anidb_id` | int_list | the IDs of its `sources` URLs `https://anidb.net/anime/<id>` |
+| `mal_id` | int_list | of `https://myanimelist.net/anime/<id>` |
+| `anilist_id` | int_list | of `https://anilist.co/anime/<id>` |
+| `type` | dict | `type`: `TV`, `MOVIE`, `OVA`, `ONA`, `SPECIAL`, `UNKNOWN` |
+| `episodes` | int | `episodes` (0 when unknown) |
+| `season` | dict | `animeSeason.season`: `SPRING`, `SUMMER`, `FALL`, `WINTER`, `UNDEFINED` |
+| `year` | int | `animeSeason.year`, absent when manami has none |
+| `title` | str | `title` |
+| `synonyms` | str_list | `synonyms`, in its order (an empty list when it has none) |
+
+The table is under the ODbL v1.0 (see [The data](#the-data-is-fribbs-anime-lists-and-manamis)).
