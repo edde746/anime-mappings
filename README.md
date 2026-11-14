@@ -9,7 +9,7 @@ Two community anime mapping datasets in one gzipped file, rebuilt every day they
   entry's episodes lie on TheTVDB's and TMDB's seasons, with its name and supplemental info (about 11,000 entries).
 
 `anime-mappings.bin.gz` holds everything both files carry but Fribb's Anime-Planet IDs, losslessly, as a
-[packed list](#the-format): tables of named, typed columns that an app reads with nothing but a gzip decoder. It is
+[Trave file](#the-format): tables of named, typed columns that an app reads with nothing but a gzip decoder. It is
 about 0.65 MB (1.5 MB unpacked), against 6 MB and 1.7 MB for the two files as published (1.5 MB gzipped).
 
 The dataset leaves out Fribb's `anime-planet_id` (Anime-Planet's string slugs): they were a third of the file
@@ -33,14 +33,14 @@ code, not the data.
 ## Releases
 
 A [workflow](.github/workflows/release.yml) runs every day and on demand. It reads both upstreams' current commits
-(their default branches), stops when the latest release was built from the same two with the same `build.py`, and
-otherwise downloads both files at those commits, builds the file, reads it back and compares it field by field with
-both files (`build.py --check`), and publishes a release tagged `vYYYY.MM.DD` (`vYYYY.MM.DD.2`, `.3`, ... for a
-second release the same day, UTC) with two assets:
+(their default branches), stops when the latest release was built from the same two with the same `build.py` and
+`requirements.txt` (its notes name both blobs), and otherwise downloads both files at those commits, builds the file,
+reads it back and compares it field by field with both files (`build.py --check`), and publishes a release tagged
+`vYYYY.MM.DD` (`vYYYY.MM.DD.2`, `.3`, ... for a second release the same day, UTC) with two assets:
 
 | Asset | Contents |
 |---|---|
-| `anime-mappings.bin.gz` | the packed list, gzip |
+| `anime-mappings.bin.gz` | the Trave file, gzip |
 | `SHA256SUMS` | its SHA-256, as `sha256sum` writes it |
 
 The latest one is always at:
@@ -59,52 +59,21 @@ knows it, instead of being dropped. The same two files always give the same byte
 ## Building
 
 ```sh
-python3 build.py anime-list-mini.json anime-list.xml anime-mappings.bin.gz --check
-python3 build.py --dump anime-mappings.bin.gz      # its tables and columns, with their sizes
+python -m pip install -r requirements.txt
+python build.py anime-list-mini.json anime-list.xml anime-mappings.bin.gz --check
+python build.py --dump anime-mappings.bin.gz       # its tables and columns, with their sizes
 ```
 
-Python 3.9 or newer, standard library only. `build.py` also has the reference reader: `read(bytes)` returns every
-table's columns, `fribb_rows` turns the Fribb table back into the JSON's rows, `anime_lists_tree` the three Anime-Lists
-tables back into the XML's elements.
+Python 3.9 or newer, plus `trave` (`pip install -r requirements.txt`). `build.py` reads the file back with
+`trave.read`; its `fribb_rows` turns the Fribb table back into the JSON's rows, `anime_lists_tree` the three
+Anime-Lists tables back into the XML's elements.
 
 ## The format
 
-The file is one gzip member. Unpacked, it is:
-
-| Bytes | Contents |
-|---|---|
-| 4 | `AMAP` |
-| 1 | the format version, `1` |
-| varint | the number of tables, then each table: |
-| string | its name |
-| varint | its number of rows |
-| varint | its number of columns, then each column: |
-| string | its name |
-| 1 | its type (below) |
-| varint | the length of its data in bytes |
-| that many bytes | its data: one value per row, in row order |
-
-Nothing follows the last table.
-
-- A **varint** is an unsigned LEB128 number: 7 bits per byte, low bits first, the high bit set on every byte but the
-  last. A **signed** number is zigzag-coded into one: 0, -1, 1, -2, 2 ... become 0, 1, 2, 3, 4 ... (`n * 2` for
-  `n >= 0`, `-n * 2 - 1` for `n < 0`). Every number fits in a signed 64-bit integer.
-- A **string** is a varint byte length, then that many bytes of UTF-8.
-- Every value can be **absent** (the row has no such key or attribute). Each value starts with a varint tag: `0` is
-  absent; any other tag `t` says what follows, by the column's type:
-
-| Type | Name | A present value |
-|---|---|---|
-| 1 | `int` | `t - 1` is the number, signed (zigzag) |
-| 2 | `int_delta` | `t - 1` is the number's difference from the column's previous present value (0 before the first), signed |
-| 3 | `str` | `t - 1` bytes of UTF-8 follow |
-| 4 | `dict` | the column's data starts with a varint count and that many strings, the dictionary, before the first row; the value is the dictionary's string number `t - 1` (from 0) |
-| 5 | `int_list` | `t - 1` items follow, each a signed varint |
-| 6 | `str_list` | `t - 1` items follow, each a string |
-
-A reader finds tables and columns by name and skips by its length any column it doesn't need or whose type it doesn't
-know; new columns and tables may appear in later files of the same version, and their order may change. A column's
-data ends exactly at its length. A new version number means a change an old reader can't skip.
+The file is a [Trave](https://github.com/edde746/trave) file (the README there is the spec), one gzip member, with
+the magic `AMAP`. Apps read it with any Trave library (Python `trave`, Go `github.com/edde746/trave/go`, Kotlin
+`dev.edde746:trave`, Dart `trave`), or with nothing but a gzip decoder by following the spec. A reader finds the
+tables and columns below by name; new columns and tables may appear in later files, and their order may change.
 
 ### `fribb`
 
